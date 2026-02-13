@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=62.0", "wheel", "setuptools-scm"]
+requires = ["setuptools>=80.0", "wheel", "setuptools-scm[simple]>=8.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -24,11 +24,13 @@ dynamic = ["version"]
 dependencies = [
   "pip",
   "numpy",
-  "tensorflow>=2.18.1",
 ]
+
+[project.optional-dependencies]
+tensorflow = ["tensorflow>=2.18.1"]
 
 [project.urls]
 "Homepage" = "https://github.com/aaronkho/low-cost-bnn"
 
-[tool.setuptools.dynamic]
-version = {attr = "epednn_mit.__version__"}
+[project.scripts]
+test_epednn_mit = "epednn_mit.scripts.test:main"
