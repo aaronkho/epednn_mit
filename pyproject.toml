@@ -28,9 +28,10 @@ dependencies = [
 
 [project.optional-dependencies]
 tensorflow = ["tensorflow>=2.18.1"]
+jax = ["flax"]
 
 [project.urls]
-"Homepage" = "https://github.com/aaronkho/low-cost-bnn"
+"Homepage" = "https://github.com/aaronkho/epednn_mit"
 
 [project.scripts]
 test_epednn_mit = "epednn_mit.scripts.test:main"

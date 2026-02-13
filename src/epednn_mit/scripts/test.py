@@ -15,7 +15,7 @@ def parse_args():
 def main():
     args = parse_args()
     try:
-        module = importlib.import_module(f'epednn_mit.models.{args.model_name}.{args.backend}')
+        module = importlib.import_module(f'epednn_mit.models.{args.model_name}.{args.backend}_model')
         model_out, test_out = getattr(module, f'test_epednn_mit_{args.model_name}_{args.backend}')()
     except ImportError:
         raise NotImplementedError(f'Test script for {args.model_name} using {args.backend} backend not yet implemented')
