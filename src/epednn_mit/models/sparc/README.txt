@@ -17,3 +17,5 @@ zeff:   [  1.3  ,  2.5   ]
 Both kappa and delta were taken from the normalized poloidal flux surface (psi) = 0.995 for the training dataset
 
 A simple test of the NN is provided in "test_script.py" inside this directory, from which an example code for loading and evaluating the network can also be taken
+
+Please cite [M. Muraca et al. 2025 Nucl. Fusion 65 096010] (https://doi.org/10.1088/1741-4326/adf656) in any works using this model
