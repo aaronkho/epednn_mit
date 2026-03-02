@@ -9,7 +9,8 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = {file = "LICENSE"}
 authors = [
-  { name = "Aaron Ho", email = "aaronkho@mit.edu" }
+  { name = "Aaron Ho", email = "aaronkho@mit.edu" },
+  { name = "Theo Brown", email = "theo.brown@ukaea.uk" }
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -29,6 +30,7 @@ dependencies = [
 [project.optional-dependencies]
 tensorflow = ["tensorflow>=2.18.1"]
 jax = ["flax"]
+torax = ["torax", "epednn_mit[jax]"]
 
 [project.urls]
 "Homepage" = "https://github.com/aaronkho/epednn_mit"
