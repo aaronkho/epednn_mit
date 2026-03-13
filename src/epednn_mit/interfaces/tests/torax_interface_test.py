@@ -80,20 +80,6 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
         pedestal_model_output.T_i_ped / pedestal_model_output.T_e_ped, 1.0
     )
 
-  def test_out_of_bounds_input_raises_error(self):
-    modified_geo = dataclasses.replace(
-        self.geo,
-        R_major=1000.0,
-    )
-    with jax_utils.enable_errors(True):
-      with self.assertRaises(RuntimeError):
-        self.jitted_pedestal_model(
-            runtime_params=self.runtime_params,
-            geo=modified_geo,
-            core_profiles=self.core_profiles,
-            source_profiles=self.source_profiles,
-        )
-
 
 if __name__ == '__main__':
   absltest.main()
