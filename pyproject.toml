@@ -29,6 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 tensorflow = ["tensorflow>=2.18.1"]
+pytorch = ["torch>=2.4.0"]
 jax = ["flax"]
 torax = ["torax", "epednn_mit[jax]"]
 
