@@ -196,6 +196,9 @@ class EPEDNNmitPedestalModel(
     super_runtime_params = set_pped_tpedratio_nped.RuntimeParams(
         set_pedestal=runtime_params.pedestal.set_pedestal,
         mode=runtime_params.pedestal.mode,
+        use_formation_model_with_adaptive_source=runtime_params.pedestal.use_formation_model_with_adaptive_source,
+        transition_time_width=runtime_params.pedestal.transition_time_width,
+        P_LH_hysteresis_factor=runtime_params.pedestal.P_LH_hysteresis_factor,
         P_ped=P_ped,
         n_e_ped=runtime_params.pedestal.n_e_ped,
         T_i_T_e_ratio=runtime_params.pedestal.T_i_T_e_ratio,
@@ -252,6 +255,9 @@ class EPEDNNmitConfig(torax.pedestal.BasePedestal):
     return RuntimeParams(
         set_pedestal=base_runtime_params.set_pedestal,
         mode=base_runtime_params.mode,
+        use_formation_model_with_adaptive_source=base_runtime_params.use_formation_model_with_adaptive_source,
+        transition_time_width=base_runtime_params.transition_time_width,
+        P_LH_hysteresis_factor=base_runtime_params.P_LH_hysteresis_factor,
         formation=base_runtime_params.formation,
         saturation=base_runtime_params.saturation,
         chi_max=base_runtime_params.chi_max,
