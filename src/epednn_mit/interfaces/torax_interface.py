@@ -28,6 +28,7 @@ import jax
 from jax import numpy as jnp
 import jaxtyping as jt
 import torax
+from torax._src.pedestal_model import pedestal_transition_state as pedestal_transition_state_lib
 from torax._src.pedestal_model import set_pped_tpedratio_nped
 from torax._src.physics import formulas
 from torax._src.torax_pydantic import torax_pydantic
@@ -173,6 +174,9 @@ class EPEDNNmitPedestalModel(
       runtime_params: torax.RuntimeParams,
       geo: torax.Geometry,
       core_profiles: torax.CoreProfiles,
+      pedestal_transition_state: (
+          pedestal_transition_state_lib.PedestalTransitionState
+      ),
   ) -> torax.pedestal.PedestalModelOutput:
     assert isinstance(runtime_params.pedestal, RuntimeParams)
 
@@ -199,6 +203,9 @@ class EPEDNNmitPedestalModel(
         use_formation_model_with_adaptive_source=runtime_params.pedestal.use_formation_model_with_adaptive_source,
         transition_time_width=runtime_params.pedestal.transition_time_width,
         P_LH_hysteresis_factor=runtime_params.pedestal.P_LH_hysteresis_factor,
+        include_dW_dt_in_P_SOL=runtime_params.pedestal.include_dW_dt_in_P_SOL,
+        explicit_pedestal=runtime_params.pedestal.explicit_pedestal,
+        pedestal_profile_form=runtime_params.pedestal.pedestal_profile_form,
         P_ped=P_ped,
         n_e_ped=runtime_params.pedestal.n_e_ped,
         T_i_T_e_ratio=runtime_params.pedestal.T_i_T_e_ratio,
@@ -216,7 +223,10 @@ class EPEDNNmitPedestalModel(
         runtime_params, pedestal=super_runtime_params
     )
     return super()._call_implementation(
-        modified_runtime_params, geo, core_profiles
+        modified_runtime_params,
+        geo,
+        core_profiles,
+        pedestal_transition_state,
     )
 
 
@@ -258,6 +268,9 @@ class EPEDNNmitConfig(torax.pedestal.BasePedestal):
         use_formation_model_with_adaptive_source=base_runtime_params.use_formation_model_with_adaptive_source,
         transition_time_width=base_runtime_params.transition_time_width,
         P_LH_hysteresis_factor=base_runtime_params.P_LH_hysteresis_factor,
+        include_dW_dt_in_P_SOL=base_runtime_params.include_dW_dt_in_P_SOL,
+        explicit_pedestal=base_runtime_params.explicit_pedestal,
+        pedestal_profile_form=base_runtime_params.pedestal_profile_form,
         formation=base_runtime_params.formation,
         saturation=base_runtime_params.saturation,
         chi_max=base_runtime_params.chi_max,

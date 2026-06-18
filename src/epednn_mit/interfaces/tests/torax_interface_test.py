@@ -8,7 +8,7 @@ from epednn_mit.interfaces import torax_interface as epednn_mit_torax_interface
 import jax
 import numpy as np
 import torax
-from torax._src import jax_utils
+from torax._src.pedestal_model import pedestal_transition_state as pedestal_transition_state_lib
 
 # pylint: disable=invalid-name
 
@@ -72,6 +72,7 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
         geo=self.geo,
         core_profiles=self.core_profiles,
         source_profiles=self.source_profiles,
+        pedestal_transition_state=pedestal_transition_state_lib.PedestalTransitionState.empty_L_mode(),
     )
 
     # These values come from the config, not the model.
