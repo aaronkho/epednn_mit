@@ -28,6 +28,7 @@ import jax
 from jax import numpy as jnp
 import jaxtyping as jt
 import torax
+from torax._src.pedestal_model import pedestal_model_output as pedestal_model_output_lib
 from torax._src.pedestal_model import pedestal_transition_state as pedestal_transition_state_lib
 from torax._src.pedestal_model import set_pped_tpedratio_nped
 from torax._src.physics import formulas
@@ -133,16 +134,90 @@ class EPEDNNmitPedestalModel(
       runtime_params: torax.RuntimeParams,
       geo: torax.Geometry,
       core_profiles: torax.CoreProfiles,
+      previous_rho_norm_ped_top: jax.Array | None = None,
   ) -> jt.Float[jt.Array, "9"]:
-    """Prepares the inputs for EPEDNN-mit."""
+    """Prepares the inputs for EPEDNN-mit.
+
+    When ``previous_rho_norm_ped_top`` is provided (and is not the
+    placeholder ``inf``), Z_eff and n_e_ped are evaluated at the mtanh
+    "pedestal" location (ψ_ped = 1 - Δ). n_e_top is read from the
+    evolved ``core_profiles.n_e`` at rho_norm_top, then corrected to ψ_ped
+    using the assumed mtanh relationship below.
+
+    mtanh pedestal density profile (Snyder et al., PPCF 46, 2004):
+
+    Neglecting the contribution of the core density profile:
+
+      n(ψ) = n_sep + a₀·[tanh(1) - tanh(2(ψ - ψ_mid)/Δ)]
+
+    where ψ_mid = 1 - Δ/2.  Key locations:
+
+      ψ_top = 1 - 1.5Δ  →  tanh arg = -2  →  EPED-NN output / TORAX top
+      ψ_ped = 1 - Δ      →  tanh arg = -1  →  EPED-NN input location
+      ψ_mid = 1 - Δ/2    →  tanh arg =  0  →  inflection point
+
+    Profile values at these locations::
+
+      n_top = n_sep + a₀·(tanh 1 + tanh 2)
+      n_ped = n_sep + a₀·2·tanh 1
+
+    Eliminating a₀:
+
+      n_ped = n_sep + (n_top - n_sep)·C
+      C = 2·tanh(1) / (tanh(1) + tanh(2)) ≈ 0.883
+
+    Args:
+      runtime_params: Runtime parameters.
+      geo: Geometry.
+      core_profiles: Core plasma profiles.
+      previous_rho_norm_ped_top: Previous timestep's rho_norm at the pedestal
+        top. ``jnp.inf`` signals first timestep (placeholder).
+
+    Returns:
+      9-element float32 array of clipped EPED-NN inputs.
+    """
     assert isinstance(runtime_params.pedestal, RuntimeParams)
 
     _, _, beta_N = formulas.calculate_betas(core_profiles, geo)
 
-    # TODO: Get Z_eff(rho_norm_ped_top) from t+dt.
-    # Currently, we approximate it from the value at rho_norm = 0.9.
-    Z_eff_idx = jnp.argmin(jnp.abs(geo.rho_norm - 0.9))
-    Z_eff = core_profiles.Z_eff[Z_eff_idx]
+    # -- Convert ρ_top (pedestal top) to ρ_ped (mtanh pedestal location) --
+    # EPED-NN expects inputs evaluated at ψ_ped = 1 − Δ, but TORAX tracks
+    # ρ_top (= ψ_top = 1 − 1.5Δ). This section maps ρ_top → ψ_top → Δ →
+    # ψ_ped → ρ_ped so we can sample profiles at the correct location.
+
+    # Default ρ_top to 0.9 when no previous pedestal output is available.
+    if previous_rho_norm_ped_top is not None:
+      safe_rho_top = jnp.where(
+          jnp.isinf(previous_rho_norm_ped_top),
+          jnp.float32(0.9),
+          previous_rho_norm_ped_top,
+      )
+    else:
+      safe_rho_top = jnp.float32(0.9)
+
+    # Map ρ → ψ using the normalised poloidal flux profile.
+    psi_face = core_profiles.psi.face_value()
+    psi_norm = (core_profiles.psi.value - psi_face[0]) / (
+        psi_face[-1] - psi_face[0]
+    )
+    psi_top = jnp.interp(safe_rho_top, geo.rho_norm, psi_norm)
+
+    # Δ = (1 − ψ_top) / 1.5  ;  ψ_ped = 1 − Δ
+    delta_psi = (1.0 - psi_top) / 1.5
+    psi_ped = 1.0 - delta_psi
+
+    # Map ψ_ped back to ρ_ped.
+    rho_ped = jnp.interp(psi_ped, psi_norm, geo.rho_norm)
+
+    # -- n_e from profile at ρ_top, then mtanh correction to ψ_ped --
+    n_e_top = jnp.interp(safe_rho_top, geo.rho_norm, core_profiles.n_e.value)
+    _C = 2.0 * jnp.tanh(1.0) / (jnp.tanh(1.0) + jnp.tanh(2.0))
+    n_e_sep = core_profiles.n_e.face_value()[-1]
+    n_e_ped = n_e_sep + (n_e_top - n_e_sep) * _C
+
+    # -- Z_eff at the pedestal location --
+    ped_idx = jnp.argmin(jnp.abs(geo.rho_norm - rho_ped))
+    Z_eff_ped = core_profiles.Z_eff[ped_idx]
 
     raw_inputs = jnp.array(
         [
@@ -152,9 +227,9 @@ class EPEDNNmitPedestalModel(
             self.model.a_0,  # [m]
             geo.elongation_face[-1],  # []
             geo.delta_face[-1],  # []
-            runtime_params.pedestal.n_e_ped * 1e-19,  # [10^19 m^-3]
+            n_e_ped * 1e-19,  # [10^19 m^-3]
             beta_N,  # [%]
-            Z_eff,  # []
+            Z_eff_ped,  # []
         ],
         # Network was trained with float32
         dtype=jnp.float32,
@@ -177,18 +252,22 @@ class EPEDNNmitPedestalModel(
       pedestal_transition_state: (
           pedestal_transition_state_lib.PedestalTransitionState
       ),
-  ) -> torax.pedestal.PedestalModelOutput:
+  ) -> pedestal_model_output_lib.PedestalModelOutput:
     assert isinstance(runtime_params.pedestal, RuntimeParams)
 
     # Get pedestal pressure and width from EPEDNN-mit.
-    inputs = self._prepare_inputs(runtime_params, geo, core_profiles)
+    inputs = self._prepare_inputs(
+        runtime_params,
+        geo,
+        core_profiles,
+        previous_rho_norm_ped_top=pedestal_transition_state.previous_pedestal_model_output.rho_norm_ped_top,
+    )
     P_ped_kPa, pedestal_width_psi_norm = self.model(inputs)
 
     # Convert pedestal width to rho_norm
-    psi_norm = (
-        core_profiles.psi.value - core_profiles.psi.left_face_value()
-    ) / (
-        core_profiles.psi.right_face_value - core_profiles.psi.left_face_value()
+    psi_face = core_profiles.psi.face_value()
+    psi_norm = (core_profiles.psi.value - psi_face[0]) / (
+        psi_face[-1] - psi_face[0]
     )
     psi_norm_ped_top = 1.0 - pedestal_width_psi_norm
     rho_norm_ped_top = jnp.interp(psi_norm_ped_top, psi_norm, geo.rho_norm)
