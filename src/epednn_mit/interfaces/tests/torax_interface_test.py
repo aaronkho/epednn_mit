@@ -1,7 +1,6 @@
 """Tests for the Torax EPEDNN-mit interface."""
 
 import dataclasses
-
 from absl.testing import absltest
 from absl.testing import parameterized
 from epednn_mit.interfaces import torax_interface as epednn_mit_torax_interface
@@ -36,7 +35,6 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
             'model_name': 'epednn_mit',
             'set_pedestal': True,
             'n_e_ped': 0.7e20,
-            'n_e_ped_is_fGW': False,
             'T_i_T_e_ratio': 1.0,
         },
     }
@@ -79,6 +77,51 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
     np.testing.assert_allclose(pedestal_model_output.n_e_ped, 0.7e20)
     np.testing.assert_allclose(
         pedestal_model_output.T_i_ped / pedestal_model_output.T_e_ped, 1.0
+    )
+
+  def test_pedestal_pressure_multiplier(self):
+    """Tests that P_ped_multiplier scales the temperature outputs."""
+    assert isinstance(
+        self.runtime_params.pedestal, epednn_mit_torax_interface.RuntimeParams
+    )
+    assert isinstance(
+        self.pedestal_model, epednn_mit_torax_interface.EPEDNNmitPedestalModel
+    )
+
+    # Get outputs with multiplier 1.0
+    pedestal_model_output_1 = self.jitted_pedestal_model(
+        runtime_params=self.runtime_params,
+        geo=self.geo,
+        core_profiles=self.core_profiles,
+        source_profiles=self.source_profiles,
+        pedestal_transition_state=pedestal_transition_state_lib.PedestalTransitionState.empty_L_mode(),
+    )
+
+    # Replace the multiplier in runtime params and re-run
+    modified_runtime_params = dataclasses.replace(
+        self.runtime_params,
+        pedestal=dataclasses.replace(
+            self.runtime_params.pedestal,
+            P_ped_multiplier=1.5,
+        ),
+    )
+
+    pedestal_model_output_2 = self.jitted_pedestal_model(
+        runtime_params=modified_runtime_params,
+        geo=self.geo,
+        core_profiles=self.core_profiles,
+        source_profiles=self.source_profiles,
+        pedestal_transition_state=pedestal_transition_state_lib.PedestalTransitionState.empty_L_mode(),
+    )
+
+    np.testing.assert_allclose(
+        pedestal_model_output_2.T_e_ped, pedestal_model_output_1.T_e_ped * 1.5
+    )
+    np.testing.assert_allclose(
+        pedestal_model_output_2.T_i_ped, pedestal_model_output_1.T_i_ped * 1.5
+    )
+    np.testing.assert_allclose(
+        pedestal_model_output_2.n_e_ped, pedestal_model_output_1.n_e_ped
     )
 
 
