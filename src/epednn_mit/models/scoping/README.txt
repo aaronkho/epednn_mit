@@ -18,6 +18,6 @@ tesep:  [ 50.0  , 500.0  ]
 
 Both kappa and delta were taken from the normalized poloidal flux surface (psi) = 0.995 for the training dataset
 
-A simple test of the NN is provided in "test_script.py" inside this directory, from which an example code for loading and evaluating the network can also be taken
+A simple test of the NN is provided in "*_model.py" scripts inside this directory, from which an example code for loading and evaluating the network can also be taken
 
 A citation for this model is pending
