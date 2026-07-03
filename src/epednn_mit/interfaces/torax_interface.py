@@ -382,7 +382,7 @@ class EPEDNNmitConfig(torax.pedestal.BasePedestal):
     return RuntimeParams(
         set_pedestal=base_runtime_params.set_pedestal,
         mode=base_runtime_params.mode,
-        use_formation_model_with_adaptive_source=base_runtime_params.use_formation_model_with_adaptive_source,
+        use_formation_model_with_internal_boundary_condition=base_runtime_params.use_formation_model_with_internal_boundary_condition,
         transition_time_width=base_runtime_params.transition_time_width,
         P_LH_hysteresis_factor=base_runtime_params.P_LH_hysteresis_factor,
         include_dW_dt_in_P_SOL=base_runtime_params.include_dW_dt_in_P_SOL,
