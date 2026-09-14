@@ -14,9 +14,7 @@ import torax
 
 class EPEDNNmitPedestalModelTest(parameterized.TestCase):
 
-  def setUp(self):
-    super().setUp()
-
+  def _build(self, machine: str):
     # Register the EPEDNN-mit pedestal model with TORAX.
     torax.pedestal.register_pedestal_structure_model(
         epednn_mit_torax_interface.EPEDNNmitConfig
@@ -38,6 +36,7 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
         'pedestal': {
             'structure_model': {
                 'model_name': 'epednn_mit',
+                'machine': machine,
                 'n_e_top': 0.7e20,
                 'T_i_T_e_ratio': 1.0,
             },
@@ -56,14 +55,22 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
     self.source_profiles = state.core_sources
     self.pedestal_state = state.model_state.pedestal
 
-  def test_build_and_call_pedestal_model(self):
+  def setUp(self):
+    super().setUp()
+    self._build('sparc')
+
+  @parameterized.parameters('sparc', 'scoping')
+  def test_build_and_call_pedestal_model(self, machine):
     """Tests the EPEDNN-mit pedestal model.
 
-    Note that the EPEDNN-mit is only valid for SPARC parameter space, but we're
-    testing here with a generic config. Hence, we don't perform checks on
-    the values of the model predictions, but only that the values set in the
-    config are passed through to the output.
+    Note that the EPEDNN-mit machines are only valid within their respective
+    training parameter spaces, but we're testing here with a generic config.
+    Hence, we don't perform checks on the values of the model predictions,
+    but only that the values set in the config are passed through to the
+    output.
     """
+    self._build(machine)
+
     assert isinstance(
         self.runtime_params.pedestal.structure,
         epednn_mit_torax_interface.RuntimeParams,
@@ -72,6 +79,7 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
         self.pedestal_model.structure_model,
         epednn_mit_torax_interface.EPEDNNmitPedestalModel,
     )
+    assert self.pedestal_model.structure_model.machine == machine
 
     pedestal_model_output, _ = self.jitted_pedestal_model(
         runtime_params=self.runtime_params,
