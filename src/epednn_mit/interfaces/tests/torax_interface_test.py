@@ -14,9 +14,7 @@ from torax._src.pedestal_model import pedestal_transition_state as pedestal_tran
 
 class EPEDNNmitPedestalModelTest(parameterized.TestCase):
 
-  def setUp(self):
-    super().setUp()
-
+  def _build(self, machine: str):
     # Register the EPEDNN-mit pedestal model with TORAX.
     torax.pedestal.register_pedestal_model(
         epednn_mit_torax_interface.EPEDNNmitConfig
@@ -33,6 +31,7 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
         'transport': {},
         'pedestal': {
             'model_name': 'epednn_mit',
+            'machine': machine,
             'set_pedestal': True,
             'n_e_ped': 0.7e20,
             'T_i_T_e_ratio': 1.0,
@@ -50,20 +49,29 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
     self.core_profiles = state.core_profiles
     self.source_profiles = state.core_sources
 
-  def test_build_and_call_pedestal_model(self):
+  def setUp(self):
+    super().setUp()
+    self._build('sparc')
+
+  @parameterized.parameters('sparc', 'scoping')
+  def test_build_and_call_pedestal_model(self, machine):
     """Tests the EPEDNN-mit pedestal model.
 
-    Note that the EPEDNN-mit is only valid for SPARC parameter space, but we're
-    testing here with a generic config. Hence, we don't perform checks on
-    the values of the model predictions, but only that the values set in the
-    config are passed through to the output.
+    Note that the EPEDNN-mit machines are only valid within their respective
+    training parameter spaces, but we're testing here with a generic config.
+    Hence, we don't perform checks on the values of the model predictions,
+    but only that the values set in the config are passed through to the
+    output.
     """
+    self._build(machine)
+
     assert isinstance(
         self.runtime_params.pedestal, epednn_mit_torax_interface.RuntimeParams
     )
     assert isinstance(
         self.pedestal_model, epednn_mit_torax_interface.EPEDNNmitPedestalModel
     )
+    assert self.pedestal_model.machine == machine
 
     pedestal_model_output = self.jitted_pedestal_model(
         runtime_params=self.runtime_params,
