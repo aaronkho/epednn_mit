@@ -1,9 +1,16 @@
 """TORAX interface for the EPEDNN-mit pedestal structure model.
 
 Please cite [M. Muraca et al. 2025 Nucl. Fusion 65
-096010](https://doi.org/10.1088/1741-4326/adf656) in any works using this model.
-Currently, this model is only valid for the SPARC parameter space, as specified
-in https://github.com/aaronkho/epednn_mit/tree/main/src/epednn_mit/models/sparc.
+096010](https://doi.org/10.1088/1741-4326/adf656) in any works using the
+"sparc" machine of this model.
+
+Two trained networks ("machines") are available, selected via the
+EPEDNNmitConfig.machine field:
+  - "sparc": Valid for the SPARC parameter space, as specified in
+    https://github.com/aaronkho/epednn_mit/tree/main/src/epednn_mit/models/sparc.
+  - "scoping": Valid for a broader high-field FPP scoping parameter space, as
+    specified in
+    https://github.com/aaronkho/epednn_mit/tree/main/src/epednn_mit/models/scoping.
 
 Register the model once before building a TORAX config, then select it under
 ``pedestal.structure_model``::
@@ -35,7 +42,8 @@ import pathlib
 from typing import Annotated, Any, Final, Literal, TypeAlias
 
 import chex
-from epednn_mit.models.sparc import jax_model as epednn_mit_jax_model
+from epednn_mit.models.scoping import jax_model as scoping_jax_model
+from epednn_mit.models.sparc import jax_model as sparc_jax_model
 import jax
 from jax import numpy as jnp
 import jaxtyping as jt
@@ -52,7 +60,7 @@ import xarray as xr
 
 EPEDNNmitStats: TypeAlias = dict[str, jax.Array]
 EPEDNNmitParams: TypeAlias = dict[str, Any]
-EPEDNNmitMachine: TypeAlias = Literal["sparc"]
+EPEDNNmitMachine: TypeAlias = Literal["sparc", "scoping"]
 
 # For definitions of these parameters, see the EPEDNN-mit SPARC README:
 # https://github.com/aaronkho/epednn_mit/blob/main/src/epednn_mit/models/sparc/README.txt
@@ -83,6 +91,23 @@ _RHO_NORM_TOP_KEY: Final[torax.output.OutputKey] = torax.output.OutputKey(
     units=torax.output.Units.DIMENSIONLESS,
     grid_type=torax.output.GridType.SCALAR,
 )
+
+# For definitions of these parameters, including the qstar, fgped, and
+# nsfrac derived quantities, see the EPEDNN-mit scoping README:
+# https://github.com/aaronkho/epednn_mit/blob/main/src/epednn_mit/models/scoping/README.txt
+_SCOPING_INPUT_BOUNDS: Final[dict[str, tuple[float, float]]] = {
+    "a": (0.4, 2.2),
+    "aspect": (2.0, 4.2),
+    "kappa": (1.3, 2.5),
+    "delta": (0.3, 0.7),
+    "bt": (3.0, 17.0),  # README notes (2.0, 18.0) is not a clean boundary.
+    "qstar": (3.0, 5.0),
+    "betan": (0.3, 3.7),
+    "zeffped": (1.2, 3.2),
+    "fgped": (0.3, 1.3),
+    "nsfrac": (0.2, 0.8),
+    "tesep": (50.0, 500.0),
+}
 
 
 @jax.tree_util.register_dataclass
@@ -131,12 +156,12 @@ class EPEDNNmitPedestalModelWrapper:
     # Freeze in parameters of the model specific to the machine.
     match self.machine:
       case "sparc":
-        model_dir = pathlib.Path(epednn_mit_jax_model.__file__).parent
+        model_dir = pathlib.Path(sparc_jax_model.__file__).parent
         model_weights = sorted(model_dir.glob("epednn_mit_sparc_*.pkl"))
         self._stats, self._params = (
-            epednn_mit_jax_model.load_ensemble_params_from_pickle(model_weights)
+            sparc_jax_model.load_ensemble_params_from_pickle(model_weights)
         )
-        self.model = epednn_mit_jax_model.EPEDNNmitEnsemble()
+        self.model = sparc_jax_model.EPEDNNmitEnsemble()
         self.input_lower_bounds = jnp.array(
             [lo for lo, _ in _SPARC_INPUT_BOUNDS.values()], dtype=jnp.float32
         )
@@ -145,17 +170,33 @@ class EPEDNNmitPedestalModelWrapper:
         )
         self.R_0 = _SPARC_DEVICE_MAJOR_RADIUS
         self.a_0 = _SPARC_DEVICE_MINOR_RADIUS
+      case "scoping":
+        model_dir = pathlib.Path(scoping_jax_model.__file__).parent
+        model_weights = sorted(model_dir.glob("epednn_mit_scoping_*.pkl"))
+        self._stats, self._params = (
+            scoping_jax_model.load_ensemble_params_from_pickle(model_weights)
+        )
+        self.model = scoping_jax_model.EPEDNNmitEnsemble()
+        self.input_lower_bounds = jnp.array(
+            [lo for lo, _ in _SCOPING_INPUT_BOUNDS.values()], dtype=jnp.float32
+        )
+        self.input_upper_bounds = jnp.array(
+            [hi for _, hi in _SCOPING_INPUT_BOUNDS.values()], dtype=jnp.float32
+        )
+        self.R_0 = None
+        self.a_0 = None
       case _:
         raise ValueError(
-            f"Unsupported machine: {machine}. Only SPARC is supported."
+            f"Unsupported machine: {machine}. Only 'sparc' and 'scoping' "
+            "are supported."
         )
 
   def __call__(self, inputs: jax.Array) -> tuple[jax.Array, jax.Array]:
     """Evaluates the EPEDNN-mit ensemble on clipped normalized inputs.
 
     Args:
-      inputs: 9-element input vector with n_e_ped and Z_eff_ped evaluated at
-        ψ_ped = 1 - Δ.
+      inputs: Input vector (9 elements for "sparc", 11 for "scoping") with
+        n_e_ped and Z_eff_ped evaluated at ψ_ped = 1 - Δ.
 
     Returns:
       A tuple ``(p_top_kPa, pedestal_top_width_psi_norm)`` where ``p_top_kPa``
@@ -236,7 +277,7 @@ class EPEDNNmitPedestalModel(torax.pedestal.PedestalStructureModel):
       geo: torax.Geometry,
       core_profiles: torax.CoreProfiles,
       previous_rho_norm_top: jt.Float[jt.Scalar, ""],
-  ) -> jt.Float[jt.Array, "9"]:
+  ) -> jt.Float[jt.Array, "n_inputs"]:
     """Prepares the inputs for EPEDNN-mit.
 
     Z_eff_ped and n_e_ped are evaluated at the mtanh "pedestal" location
@@ -273,7 +314,8 @@ class EPEDNNmitPedestalModel(torax.pedestal.PedestalStructureModel):
       previous_rho_norm_top: Previous timestep's rho_norm at the pedestal top.
 
     Returns:
-      9-element float32 array of clipped EPED-NN inputs.
+      float32 array of clipped EPED-NN inputs (9 elements for "sparc", 11
+      for "scoping").
     """
     assert isinstance(runtime_params.pedestal.structure, RuntimeParams)
 
@@ -312,21 +354,73 @@ class EPEDNNmitPedestalModel(torax.pedestal.PedestalStructureModel):
         rho_ped, geo.rho_face_norm, core_profiles.ions.Z_eff_face
     )
 
-    raw_inputs = jnp.array(
-        [
-            core_profiles.poloidal_flux.I_p_profile_face[-1] * 1e-6,  # [MA]
-            geo.B_0,  # [T]
-            self.model.R_0,  # [m]
-            self.model.a_0,  # [m]
-            geo.elongation_face[-1],  # []
-            geo.delta_face[-1],  # []
-            n_e_ped * 1e-19,  # [10^19 m^-3]
-            beta_N,  # [%]
-            Z_eff_ped,  # []
-        ],
-        # Network was trained with float32
-        dtype=jnp.float32,
-    )
+    I_p = core_profiles.poloidal_flux.I_p_profile_face[-1]  # [A]
+    I_p_MA = I_p * 1e-6  # [MA]
+
+    if self.machine == "scoping":
+      # Definitions of qstar, fgped, and nsfrac follow the "Derived
+      # quantities" section of the EPEDNN-mit scoping README:
+      #   fgped = n_e_ped / n_Greenwald, with
+      #           n_Greenwald = (I_p[MA] / (pi * a^2)) * 1e20 [m^-3].
+      #   qstar = 5*a^2*B_t*shaping / (R * I_p[MA])  (Uckan & Sauthoff, ITER
+      #           Physics Design Guidelines, 1990), where:
+      #     epsilon = a / R
+      #     shaping = 0.5*(1 + kappa^2*(1 + 2*delta^2 - 1.2*delta^3))
+      #               * (1.17 - 0.65*epsilon) / (1 - epsilon^2)^2
+      #   nsfrac = n_e,sep / n_e_ped
+      kappa = geo.elongation_face[-1]
+      delta = geo.delta_face[-1]
+      epsilon = geo.a_minor / geo.R_major
+      shaping = (
+          0.5
+          * (1.0 + kappa**2 * (1.0 + 2.0 * delta**2 - 1.2 * delta**3))
+          * (1.17 - 0.65 * epsilon)
+          / (1.0 - epsilon**2) ** 2
+      )
+      qstar = (
+          5.0
+          * geo.a_minor**2
+          * geo.B_0
+          * shaping
+          / (geo.R_major * (I_p_MA + constants.CONSTANTS.eps))
+      )
+      n_GW = I_p_MA / (jnp.pi * geo.a_minor**2) * 1e20
+      fgped = n_e_ped / (n_GW + constants.CONSTANTS.eps)
+      T_e_sep_eV = core_profiles.kinetic.T_e.right_face_value[0] * 1e3
+
+      raw_inputs = jnp.array(
+          [
+              geo.a_minor,  # [m]
+              geo.R_major / geo.a_minor,  # aspect ratio []
+              kappa,  # []
+              delta,  # []
+              geo.B_0,  # [T]
+              qstar,  # shaped (engineering) edge safety factor []
+              beta_N,  # [%]
+              Z_eff_ped,  # []
+              fgped,  # Greenwald fraction of n_e_ped []
+              n_e_sep / (n_e_ped + constants.CONSTANTS.eps),  # nsfrac []
+              T_e_sep_eV,  # tesep [eV]
+          ],
+          # Network was trained with float32
+          dtype=jnp.float32,
+      )
+    else:
+      raw_inputs = jnp.array(
+          [
+              I_p_MA,  # [MA]
+              geo.B_0,  # [T]
+              self.model.R_0,  # [m]
+              self.model.a_0,  # [m]
+              geo.elongation_face[-1],  # []
+              geo.delta_face[-1],  # []
+              n_e_ped * 1e-19,  # [10^19 m^-3]
+              beta_N,  # [%]
+              Z_eff_ped,  # []
+          ],
+          # Network was trained with float32
+          dtype=jnp.float32,
+      )
 
     clipped_inputs = jnp.clip(
         raw_inputs,
@@ -504,7 +598,7 @@ class EPEDNNmitConfig(torax.pedestal.StructureConfigBase):
   """TORAX pedestal structure model config using EPEDNN-mit.
 
   Attributes:
-    machine: Which trained EPEDNN-mit network to use.
+    machine: Which trained EPEDNN-mit network to use, "sparc" or "scoping".
     n_e_top: The electron density at the pedestal top [m^-3].
     T_i_T_e_ratio: Ratio of the ion and electron temperature at the pedestal
       top [dimensionless].
