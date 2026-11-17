@@ -1,24 +1,27 @@
-"""TORAX interface for the EPEDNN-mit pedestal model.
+"""TORAX interface for the EPEDNN-mit pedestal structure model.
 
 Please cite [M. Muraca et al. 2025 Nucl. Fusion 65
 096010](https://doi.org/10.1088/1741-4326/adf656) in any works using this model.
 Currently, this model is only valid for the SPARC parameter space, as specified
 in https://github.com/aaronkho/epednn_mit/tree/main/src/epednn_mit/models/sparc.
 
-This file defines the four necessary classes to use the model in TORAX:
-1. A wrapper class, which closes over the EPEDNN-mit model, parameters, and
-   statistics. This is necessary to make the model hashable.
-2. A TORAX pedestal model, which calls the wrapper within its
-   _call_implementation. This is what will be called by TORAX.
-3. A TORAX pedestal model Pydantic config, which is used to build the pedestal
-   model and runtime params. This allows us to use the model from a TORAX
-   config.
-4. A runtime params class, which contains any input parameters specific to the
-   EPEDNN-mit model. This will be passed to the pedestal model by TORAX at each
-   time step.
+This file defines the classes required to use EPEDNN-mit as a TORAX pedestal
+structure model:
+1. ``EPEDNNmitPedestalModelWrapper``: closes over the EPEDNN-mit ensemble,
+   parameters, and normalization statistics, hashing and comparing by machine.
+2. ``EpedNnStructureState``: pedestal structure state carried across timesteps
+   tracking the previous pedestal-top location ``rho_norm_top``.
+3. ``RuntimeParams``: dynamic runtime parameters passed to the structure model
+   at each timestep.
+4. ``EPEDNNmitPedestalModel``: ``torax.pedestal.PedestalStructureModel``
+   implementation that initializes state and evaluates the wrapper.
+5. ``EPEDNNmitConfig``: Pydantic ``torax.pedestal.StructureConfigBase`` config
+   used to register and build the structure model and runtime params from a
+   TORAX config.
 """
 
 import dataclasses
+import functools
 import pathlib
 from typing import Annotated, Any, Final, Literal, TypeAlias
 
@@ -28,12 +31,9 @@ import jax
 from jax import numpy as jnp
 import jaxtyping as jt
 import torax
-from torax._src import constants
-from torax._src.pedestal_model import pedestal_model as pedestal_model_lib
-from torax._src.pedestal_model import pedestal_model_output as pedestal_model_output_lib
-from torax._src.pedestal_model import pedestal_transition_state as pedestal_transition_state_lib
-from torax._src.physics import formulas
-from torax._src.torax_pydantic import torax_pydantic
+from torax import constants
+from torax import math_utils
+from torax import torax_pydantic
 from typing_extensions import override
 
 # pylint: disable=invalid-name
@@ -58,16 +58,31 @@ _SPARC_INPUT_BOUNDS: Final[dict[str, tuple[float, float]]] = {
 }
 _SPARC_DEVICE_MAJOR_RADIUS: Final[float] = 1.85
 _SPARC_DEVICE_MINOR_RADIUS: Final[float] = 0.57
+# In the Snyder mtanh parameterization, the mtanh knee ("pedestal") lies at
+# ψ_ped = 1 - Δ and the pedestal top lies at ψ_top = 1 - 1.5 * Δ, where Δ is
+# the mtanh width. Thus the pedestal-top width is w_top = 1 - ψ_top = 1.5 * Δ.
+_PEDESTAL_TOP_WIDTH_FACTOR: Final[float] = 1.5
+# Small offset added to the on-axis magnetic pressure [Pa] to guard the beta
+# calculation against division by zero.
+_MAGNETIC_PRESSURE_EPS: Final[float] = 1e-7
 
 
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass(frozen=True)
-class RuntimeParams(torax.pedestal.RuntimeParams):
+class EpedNnStructureState(torax.pedestal.StructureState):
+  """Structure state for EPED-NN, tracking previous pedestal top location."""
+
+  rho_norm_top: jt.Float[jt.Scalar, ""]
+
+
+@jax.tree_util.register_dataclass
+@dataclasses.dataclass(frozen=True)
+class RuntimeParams(torax.pedestal.StructureRuntimeParams):
   """Runtime params for the EPEDNNmitPedestalModel."""
 
-  n_e_ped: jt.Float[jt.Scalar, ""]  # [m^-3]
+  n_e_top: jt.Float[jt.Scalar, ""]  # [m^-3]
   T_i_T_e_ratio: jt.Float[jt.Scalar, ""]
-  P_ped_multiplier: jt.Float[jt.Scalar, ""]
+  p_top_multiplier: jt.Float[jt.Scalar, ""]
 
 
 class EPEDNNmitPedestalModelWrapper:
@@ -103,18 +118,72 @@ class EPEDNNmitPedestalModelWrapper:
         )
 
   def __call__(self, inputs: jax.Array) -> tuple[jax.Array, jax.Array]:
-    P_ped_kPa, pedestal_width_psi_norm = self.model.apply(
+    """Evaluates the EPEDNN-mit ensemble on clipped normalized inputs.
+
+    Args:
+      inputs: 9-element input vector with n_e_ped and Z_eff_ped evaluated at
+        ψ_ped = 1 - Δ.
+
+    Returns:
+      A tuple ``(p_top_kPa, pedestal_top_width_psi_norm)`` where ``p_top_kPa``
+      is the pedestal-top pressure [kPa] at ψ_top = 1 - 1.5Δ and
+      ``pedestal_top_width_psi_norm`` is the pedestal-top width
+      w_top = 1 - ψ_top = 1.5Δ in normalized poloidal flux.
+    """
+    p_top_kPa, pedestal_top_width_psi_norm = self.model.apply(
         self._params, inputs, **self._stats
     )
-    return P_ped_kPa, pedestal_width_psi_norm
+    return p_top_kPa, pedestal_top_width_psi_norm
 
-  def __hash__(self):
+  def __hash__(self) -> int:
     return hash(self.machine)
+
+  def __eq__(self, other: object) -> bool:
+    return (
+        isinstance(other, EPEDNNmitPedestalModelWrapper)
+        and self.machine == other.machine
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _get_epednn_mit_wrapper(
+    machine: EPEDNNmitMachine,
+) -> EPEDNNmitPedestalModelWrapper:
+  return EPEDNNmitPedestalModelWrapper(machine)
+
+
+def _calculate_beta_N(
+    core_profiles: torax.CoreProfiles,
+    geo: torax.Geometry,
+) -> jt.Float[jt.Array, ""]:
+  """Calculates normalized toroidal plasma beta beta_N [%]."""
+  p_total_volume_avg = (
+      math_utils.cell_integration(
+          core_profiles.pressure_total.value * geo.vpr, geo
+      )
+      / geo.volume_face[-1]
+  )
+  magnetic_pressure_on_axis = geo.B_0**2 / (2.0 * constants.CONSTANTS.mu_0)
+  beta_tor = p_total_volume_avg / (
+      magnetic_pressure_on_axis + _MAGNETIC_PRESSURE_EPS
+  )
+  return (
+      1e8
+      * beta_tor
+      * (
+          geo.a_minor
+          * geo.B_0
+          / (
+              core_profiles.poloidal_flux.I_p_profile_face[-1]
+              + constants.CONSTANTS.eps
+          )
+      )
+  )
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
-class EPEDNNmitPedestalModel(pedestal_model_lib.PedestalModel):
-  """TORAX pedestal model using EPEDNN-mit to predict pressure and width."""
+class EPEDNNmitPedestalModel(torax.pedestal.PedestalStructureModel):
+  """Pedestal structure model using EPEDNN-mit to predict pressure and width."""
 
   machine: EPEDNNmitMachine = "sparc"
   # The following fields are set by __post_init__.
@@ -124,7 +193,7 @@ class EPEDNNmitPedestalModel(pedestal_model_lib.PedestalModel):
     # Need to use __setattr__  to install attributes as this is a frozen
     # dataclass.
     object.__setattr__(
-        self, "model", EPEDNNmitPedestalModelWrapper(self.machine)
+        self, "model", _get_epednn_mit_wrapper(self.machine)
     )
     super().__post_init__()
 
@@ -133,15 +202,14 @@ class EPEDNNmitPedestalModel(pedestal_model_lib.PedestalModel):
       runtime_params: torax.RuntimeParams,
       geo: torax.Geometry,
       core_profiles: torax.CoreProfiles,
-      previous_rho_norm_ped_top: jax.Array | None = None,
+      previous_rho_norm_top: jt.Float[jt.Scalar, ""],
   ) -> jt.Float[jt.Array, "9"]:
     """Prepares the inputs for EPEDNN-mit.
 
-    When ``previous_rho_norm_ped_top`` is provided (and is not the
-    placeholder ``inf``), Z_eff and n_e_ped are evaluated at the mtanh
-    "pedestal" location (ψ_ped = 1 - Δ). n_e_top is read from the
-    evolved ``core_profiles.n_e`` at rho_norm_top, then corrected to ψ_ped
-    using the assumed mtanh relationship below.
+    Z_eff_ped and n_e_ped are evaluated at the mtanh "pedestal" location
+    (ψ_ped = 1 - Δ). n_e_top is read from the evolved
+    ``core_profiles.kinetic.n_e`` at ``previous_rho_norm_top``, then converted
+    to ψ_ped using the mtanh relationship below.
 
     mtanh pedestal density profile (Snyder et al., PPCF 46, 2004):
 
@@ -169,58 +237,51 @@ class EPEDNNmitPedestalModel(pedestal_model_lib.PedestalModel):
       runtime_params: Runtime parameters.
       geo: Geometry.
       core_profiles: Core plasma profiles.
-      previous_rho_norm_ped_top: Previous timestep's rho_norm at the pedestal
-        top. ``jnp.inf`` signals first timestep (placeholder).
+      previous_rho_norm_top: Previous timestep's rho_norm at the pedestal top.
 
     Returns:
       9-element float32 array of clipped EPED-NN inputs.
     """
-    assert isinstance(runtime_params.pedestal, RuntimeParams)
+    assert isinstance(runtime_params.pedestal.structure, RuntimeParams)
 
-    _, _, beta_N = formulas.calculate_betas(core_profiles, geo)
+    beta_N = _calculate_beta_N(core_profiles, geo)
 
     # -- Convert ρ_top (pedestal top) to ρ_ped (mtanh pedestal location) --
-    # EPED-NN expects inputs evaluated at ψ_ped = 1 − Δ, but TORAX tracks
+    # EPED-NN expects inputs evaluated at ψ_ped = 1 − Δ, while TORAX tracks
     # ρ_top (= ψ_top = 1 − 1.5Δ). This section maps ρ_top → ψ_top → Δ →
     # ψ_ped → ρ_ped so we can sample profiles at the correct location.
 
-    # Default ρ_top to 0.9 when no previous pedestal output is available.
-    if previous_rho_norm_ped_top is not None:
-      safe_rho_top = jnp.where(
-          jnp.isinf(previous_rho_norm_ped_top),
-          jnp.float32(0.9),
-          previous_rho_norm_ped_top,
-      )
-    else:
-      safe_rho_top = jnp.float32(0.9)
-
-    # Map ρ → ψ using the normalised poloidal flux profile.
-    psi_face = core_profiles.psi.face_value()
-    psi_norm = (core_profiles.psi.value - psi_face[0]) / (
-        psi_face[-1] - psi_face[0]
+    # Map ρ ↔ ψ on the face grid, consistently with the mtanh pedestal profile.
+    psi_norm_face = core_profiles.psi_norm_face
+    psi_top = jnp.interp(
+        previous_rho_norm_top, geo.rho_face_norm, psi_norm_face
     )
-    psi_top = jnp.interp(safe_rho_top, geo.rho_norm, psi_norm)
 
     # Δ = (1 − ψ_top) / 1.5  ;  ψ_ped = 1 − Δ
-    delta_psi = (1.0 - psi_top) / 1.5
+    delta_psi = (1.0 - psi_top) / _PEDESTAL_TOP_WIDTH_FACTOR
     psi_ped = 1.0 - delta_psi
 
     # Map ψ_ped back to ρ_ped.
-    rho_ped = jnp.interp(psi_ped, psi_norm, geo.rho_norm)
+    rho_ped = jnp.interp(psi_ped, psi_norm_face, geo.rho_face_norm)
 
-    # -- n_e from profile at ρ_top, then mtanh correction to ψ_ped --
-    n_e_top = jnp.interp(safe_rho_top, geo.rho_norm, core_profiles.n_e.value)
+    # -- n_e from profile at ρ_top, then mtanh conversion to ψ_ped --
+    n_e_top = jnp.interp(
+        previous_rho_norm_top,
+        geo.rho_face_norm,
+        core_profiles.kinetic.n_e.face_value(),
+    )
     _C = 2.0 * jnp.tanh(1.0) / (jnp.tanh(1.0) + jnp.tanh(2.0))
-    n_e_sep = core_profiles.n_e.face_value()[-1]
+    n_e_sep = core_profiles.kinetic.n_e.right_face_value[0]
     n_e_ped = n_e_sep + (n_e_top - n_e_sep) * _C
 
     # -- Z_eff at the pedestal location --
-    ped_idx = jnp.argmin(jnp.abs(geo.rho_norm - rho_ped))
-    Z_eff_ped = core_profiles.Z_eff[ped_idx]
+    Z_eff_ped = jnp.interp(
+        rho_ped, geo.rho_face_norm, core_profiles.ions.Z_eff_face
+    )
 
     raw_inputs = jnp.array(
         [
-            core_profiles.Ip_profile_face[-1] * 1e-6,  # [MA]
+            core_profiles.poloidal_flux.I_p_profile_face[-1] * 1e-6,  # [MA]
             geo.B_0,  # [T]
             self.model.R_0,  # [m]
             self.model.a_0,  # [m]
@@ -243,77 +304,107 @@ class EPEDNNmitPedestalModel(pedestal_model_lib.PedestalModel):
     return clipped_inputs
 
   @override
-  def _call_implementation(
+  def initial_state(
       self,
       runtime_params: torax.RuntimeParams,
       geo: torax.Geometry,
       core_profiles: torax.CoreProfiles,
-      pedestal_transition_state: (
-          pedestal_transition_state_lib.PedestalTransitionState
-      ),
-  ) -> pedestal_model_output_lib.PedestalModelOutput:
-    """Computes pedestal-top values from EPEDNN-mit pressure and width.
+  ) -> EpedNnStructureState:
+    """Returns the initial structure state for EPED-NN."""
+    # _prepare_inputs requires an initial estimate of rho_norm_top to derive
+    # the mtanh knee location (ψ_ped = 1 - Δ), where EPED-NN's input features
+    # are evaluated. Evaluating self() once here with rho_norm_top = 0.9 gives a
+    # model-consistent initial rho_norm_top so that PedestalModel.initialize
+    # evaluates pedestal structure with a self-consistent width.
+    _, structure_state = self(
+        runtime_params,
+        geo,
+        core_profiles,
+        EpedNnStructureState(
+            rho_norm_top=jnp.array(0.9, dtype=geo.rho_face_norm.dtype)
+        ),
+    )
+    return structure_state
+
+  @override
+  def __call__(
+      self,
+      runtime_params: torax.RuntimeParams,
+      geo: torax.Geometry,
+      core_profiles: torax.CoreProfiles,
+      structure_state: torax.pedestal.StructureState,
+  ) -> tuple[
+      torax.pedestal.PedestalStructure,
+      EpedNnStructureState,
+  ]:
+    """Computes pedestal-top values from EPEDNN-mit pressure and top width.
 
     Naming convention: In the EPED literature, "pedestal" (ψ_ped = 1 - Δ)
     and "pedestal top" (ψ_top = 1 - 1.5Δ) are distinct mtanh profile
-    locations.  EPEDNN-mit outputs P_top and the width to the pedestal
-    top, while TORAX I/O also uses "ped" to mean pedestal *top*
-    (e.g. ``n_e_ped``, ``T_e_ped``, ``rho_norm_ped_top`` in
-    ``PedestalModelOutput``).
-
-    Within this function, local variables use ``_top`` suffixes when
-    evaluated at the pedestal-top location (rho_norm_top) to distinguish from
-    EPEDNN-mit inputs evaluated at ψ_ped.
+    locations, where Δ is the Snyder mtanh width. EPEDNN-mit takes inputs
+    (``n_e_ped``, ``Z_eff_ped``) evaluated at ψ_ped = 1 - Δ (computed in
+    ``_prepare_inputs`` from ``previous_rho_norm_top`` via
+    Δ = (1 - ψ_top) / 1.5) and outputs ``p_top_kPa`` (at ψ_top) together with
+    the pedestal-top width ``pedestal_top_width_psi_norm`` = 1 - ψ_top = 1.5Δ.
+    Hence the pedestal-top location is directly
+    ``psi_norm_top = 1 - pedestal_top_width_psi_norm``, matching TORAX's
+    ``*_top`` convention (``n_e_top``, ``T_e_top``, ``T_i_top``,
+    ``rho_norm_top`` in ``PedestalStructure``).
 
     Args:
       runtime_params: Runtime parameters including pedestal config.
       geo: Geometry.
       core_profiles: Core plasma profiles.
-      pedestal_transition_state: Pedestal transition state containing
-        the previous pedestal model output.
-    """
-    assert isinstance(runtime_params.pedestal, RuntimeParams)
+      structure_state: Pedestal structure state carried over from the previous
+        timestep.
 
-    # Get pedestal pressure and width from EPEDNN-mit.
+    Returns:
+      Pedestal structure properties and the updated EPED-NN structure state.
+    """
+    assert isinstance(runtime_params.pedestal.structure, RuntimeParams)
+    assert isinstance(structure_state, EpedNnStructureState)
+
+    # Get pedestal-top pressure and pedestal-top width from EPEDNN-mit.
     inputs = self._prepare_inputs(
         runtime_params,
         geo,
         core_profiles,
-        previous_rho_norm_ped_top=pedestal_transition_state.previous_pedestal_model_output.rho_norm_ped_top,
+        previous_rho_norm_top=structure_state.rho_norm_top,
     )
-    # P_top_kPa is pressure at the pedestal top.
-    # pedestal_width_psi_norm is Δψ_N from ψ=1 to the pedestal top (ψ_top).
-    P_top_kPa, pedestal_width_psi_norm = self.model(inputs)
+    # p_top_kPa is pressure at the pedestal top (ψ_top = 1 - 1.5Δ).
+    # pedestal_top_width_psi_norm is the pedestal-top width 1 - ψ_top = 1.5Δ
+    # (NOT the mtanh width Δ; the network was trained on pedestal-top width).
+    p_top_kPa, pedestal_top_width_psi_norm = self.model(inputs)
 
-    # Convert pedestal-top width from ψ_N to ρ_N.
-    psi_face = core_profiles.psi.face_value()
-    psi_norm = (core_profiles.psi.value - psi_face[0]) / (
-        psi_face[-1] - psi_face[0]
-    )
-    psi_norm_ped_top = 1.0 - pedestal_width_psi_norm
-    rho_norm_ped_top = jnp.interp(psi_norm_ped_top, psi_norm, geo.rho_norm)
-    rho_norm_ped_top_idx = jnp.argmin(
-        jnp.abs(geo.rho_norm - rho_norm_ped_top)
+    # Pedestal-top poloidal flux location ψ_top = 1 - w_top, mapped to ρ_N on
+    # the face grid.
+    psi_norm_top = 1.0 - pedestal_top_width_psi_norm
+    rho_norm_top = jnp.interp(
+        psi_norm_top, core_profiles.psi_norm_face, geo.rho_face_norm
     )
 
     # Convert pressure from kPa to Pa.
-    P_top = P_top_kPa * 1e3
+    p_top = p_top_kPa * 1e3
 
-    # n_e_top: pedestal-top electron density (TORAX API names this "n_e_ped").
-    n_e_top = runtime_params.pedestal.n_e_ped
+    n_e_top = runtime_params.pedestal.structure.n_e_top
 
-    # -- Calculate T_e and T_i at the pedestal top from P_top --
+    # -- Calculate T_e and T_i at the pedestal top from p_top --
     # Evaluate composition at the pedestal-top location.
-    temperature_ratio = runtime_params.pedestal.T_i_T_e_ratio
-    Z_eff_top = core_profiles.Z_eff[rho_norm_ped_top_idx]
-    Z_i_top = core_profiles.Z_i[rho_norm_ped_top_idx]
-    Z_impurity_top = core_profiles.Z_impurity[rho_norm_ped_top_idx]
+    temperature_ratio = runtime_params.pedestal.structure.T_i_T_e_ratio
+    at_top = lambda face_values: jnp.interp(
+        rho_norm_top, geo.rho_face_norm, face_values
+    )
+    Z_eff_top = at_top(core_profiles.ions.Z_eff_face)
+    Z_i_top = at_top(core_profiles.ions.Z_i_face)
+    Z_impurity_top = at_top(core_profiles.ions.Z_impurity_average_face)
+    Z_impurity_bundled_top = at_top(
+        core_profiles.ions.Z_impurity_bundled_face
+    )
     dilution_factor_top = jnp.where(
         Z_eff_top == 1.0,
         1.0,
-        formulas.calculate_main_ion_dilution_factor(
-            Z_i_top, Z_impurity_top, Z_eff_top
-        ),
+        (Z_impurity_bundled_top - Z_eff_top)
+        / (Z_i_top * (Z_impurity_bundled_top - Z_i_top)),
     )
     n_i_top = dilution_factor_top * n_e_top
     safe_Z_impurity_top = jnp.where(
@@ -324,9 +415,9 @@ class EPEDNNmitPedestalModel(pedestal_model_lib.PedestalModel):
         0.0,
         (n_e_top - Z_i_top * n_i_top) / safe_Z_impurity_top,
     )
-    # P = T_e*n_e + T_i*n_i + T_i*n_imp  (assuming T_imp = T_i)
+    # p = T_e*n_e + T_i*n_i + T_i*n_imp  (assuming T_imp = T_i)
     T_e_top = (
-        P_top * runtime_params.pedestal.P_ped_multiplier
+        p_top * runtime_params.pedestal.structure.p_top_multiplier
     ) / (
         n_e_top
         + temperature_ratio * n_i_top
@@ -334,68 +425,51 @@ class EPEDNNmitPedestalModel(pedestal_model_lib.PedestalModel):
     ) / constants.CONSTANTS.keV_to_J
     T_i_top = temperature_ratio * T_e_top
 
-    # TORAX API uses "ped" to mean pedestal top.
-    return pedestal_model_output_lib.PedestalModelOutput(
-        n_e_ped=n_e_top,
-        T_i_ped=T_i_top,
-        T_e_ped=T_e_top,
-        rho_norm_ped_top=rho_norm_ped_top,
+    return (
+        torax.pedestal.PedestalStructure(
+            n_e_top=n_e_top,
+            T_i_top=T_i_top,
+            T_e_top=T_e_top,
+            rho_norm_top=rho_norm_top,
+        ),
+        EpedNnStructureState(rho_norm_top=rho_norm_top),
     )
 
 
-# TODO: Keep aligned with upcoming TORAX V2 API changes where n_e_ped will be
-# renamed to n_e_top for consistency with EPED naming conventions.
-class EPEDNNmitConfig(torax.pedestal.BasePedestal):
-  """TORAX pedestal model config using EPEDNN-mit.
+class EPEDNNmitConfig(torax.pedestal.StructureConfigBase):
+  """TORAX pedestal structure model config using EPEDNN-mit.
 
   Attributes:
-    n_e_ped: The electron density at the pedestal top [m^-3].
+    n_e_top: The electron density at the pedestal top [m^-3].
     T_i_T_e_ratio: Ratio of the ion and electron temperature at the pedestal
-      [dimensionless].
-    P_ped_multiplier: Multiplier for the pedestal pressure (mostly used for
+      top [dimensionless].
+    p_top_multiplier: Multiplier for the pedestal-top pressure (mostly used for
       sensitivity analysis) [dimensionless].
   """
 
   model_name: Annotated[Literal["epednn_mit"], torax_pydantic.JAX_STATIC] = (
       "epednn_mit"
   )
-  n_e_ped: torax_pydantic.TimeVaryingScalar = torax_pydantic.ValidatedDefault(
+  n_e_top: torax_pydantic.TimeVaryingScalar = torax_pydantic.ValidatedDefault(
       0.7e20
   )
   T_i_T_e_ratio: torax_pydantic.TimeVaryingScalar = (
       torax_pydantic.ValidatedDefault(1.0)
   )
-  P_ped_multiplier: torax_pydantic.TimeVaryingScalar = (
+  p_top_multiplier: torax_pydantic.TimeVaryingScalar = (
       torax_pydantic.ValidatedDefault(1.0)
   )
 
-  def build_pedestal_model(
+  def build_structure_model(
       self,
   ) -> EPEDNNmitPedestalModel:
-    return EPEDNNmitPedestalModel(
-        formation_model=self.formation_model.build_formation_model(),
-        saturation_model=self.saturation_model.build_saturation_model(),
-    )
+    return EPEDNNmitPedestalModel()
 
   def build_runtime_params(self, t: chex.Numeric) -> RuntimeParams:
     base_runtime_params = super().build_runtime_params(t)
     return RuntimeParams(
-        set_pedestal=base_runtime_params.set_pedestal,
-        mode=base_runtime_params.mode,
-        use_formation_model_with_internal_boundary_condition=base_runtime_params.use_formation_model_with_internal_boundary_condition,
-        transition_time_width=base_runtime_params.transition_time_width,
-        P_LH_hysteresis_factor=base_runtime_params.P_LH_hysteresis_factor,
-        include_dW_dt_in_P_SOL=base_runtime_params.include_dW_dt_in_P_SOL,
-        explicit_pedestal=base_runtime_params.explicit_pedestal,
-        pedestal_profile_form=base_runtime_params.pedestal_profile_form,
-        formation=base_runtime_params.formation,
-        saturation=base_runtime_params.saturation,
-        chi_max=base_runtime_params.chi_max,
-        D_e_max=base_runtime_params.D_e_max,
-        V_e_max=base_runtime_params.V_e_max,
-        V_e_min=base_runtime_params.V_e_min,
-        pedestal_top_smoothing_width=base_runtime_params.pedestal_top_smoothing_width,
-        P_ped_multiplier=self.P_ped_multiplier.get_value(t),
-        n_e_ped=self.n_e_ped.get_value(t),
+        **vars(base_runtime_params),
+        p_top_multiplier=self.p_top_multiplier.get_value(t),
+        n_e_top=self.n_e_top.get_value(t),
         T_i_T_e_ratio=self.T_i_T_e_ratio.get_value(t),
     )
