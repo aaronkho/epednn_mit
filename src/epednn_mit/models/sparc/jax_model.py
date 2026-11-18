@@ -75,6 +75,9 @@ def load_ensemble_params_from_pickle(
         all_stats.append(stats)
         all_weights.append(weights)
 
+    if not all_stats:
+        raise ValueError(f"No parameters loaded from {pickle_files}")
+
     ensemble_stats = jax.tree.map(lambda *args: jnp.stack(args), *all_stats)
     ensemble_weights = jax.tree.map(lambda *args: jnp.stack(args), *all_weights)
 
@@ -212,8 +215,8 @@ def test_epednn_mit_sparc_jax():
     """
     test_in = jnp.atleast_2d(jnp.array([10.0, 9.0, 1.85, 0.57, 2.0, 0.45, 30.0, 1.2, 2.0]))
     test_out = jnp.atleast_2d(jnp.array([3.19934668e02, 4.11556657e-02]))
-    root = Path(__file__).resolve().parent
-    weights_files = [Path(f).resolve() for f in sorted(root.glob("*sparc*.pkl"))]
+    root = Path(__file__).parent
+    weights_files = sorted(root.glob("*sparc*.pkl"))
     stats, params = load_ensemble_params_from_pickle(weights_files)
     model = EPEDNNmitEnsemble()
     model_out = model.apply(params, test_in, **stats)
