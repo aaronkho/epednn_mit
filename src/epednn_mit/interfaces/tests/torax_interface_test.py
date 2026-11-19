@@ -293,6 +293,45 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
     np.testing.assert_allclose(p_top_f32, p_top_f64)
     np.testing.assert_allclose(width_f32, width_f64)
 
+  def test_initial_state_from_datatree(self):
+    structure_model = self.pedestal_model.structure_model
+    restored_state = structure_model.initial_state_from_datatree(
+        None, self.runtime_params
+    )
+    self.assertIsInstance(
+        restored_state, epednn_mit_torax_interface.EpedNnStructureState
+    )
+    structure_output, updated_state = structure_model(
+        self.runtime_params, self.geo, self.core_profiles, restored_state
+    )
+    np.testing.assert_allclose(
+        updated_state.rho_norm_top, structure_output.rho_norm_top
+    )
+
+  def test_structure_state_datatree_roundtrip(self):
+    structure_model = self.pedestal_model.structure_model
+    stacked_state = epednn_mit_torax_interface.EpedNnStructureState(
+        rho_norm_top=jax.numpy.array([0.85, 0.87])
+    )
+    context = torax.output.OutputGridContext(
+        times=np.array([0.0, 0.1]),
+        rho_face_norm=self.geo.rho_face_norm,
+        rho_cell_norm=self.geo.rho_norm,
+        rho_cell_plus_boundaries_norm=np.concatenate([
+            [0.0],
+            np.asarray(self.geo.rho_norm),
+            [1.0],
+        ]),
+    )
+    datatree = stacked_state.to_xr_datatree(context)
+    restored = structure_model.initial_state_from_datatree(
+        datatree.isel(time=-1), self.runtime_params
+    )
+    self.assertIsInstance(
+        restored, epednn_mit_torax_interface.EpedNnStructureState
+    )
+    np.testing.assert_allclose(restored.rho_norm_top, 0.87)
+
 
 if __name__ == '__main__':
   absltest.main()

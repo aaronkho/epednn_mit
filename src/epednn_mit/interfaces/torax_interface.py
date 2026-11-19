@@ -30,11 +30,13 @@ from epednn_mit.models.sparc import jax_model as epednn_mit_jax_model
 import jax
 from jax import numpy as jnp
 import jaxtyping as jt
+import numpy as np
 import torax
 from torax import constants
 from torax import math_utils
 from torax import torax_pydantic
 from typing_extensions import override
+import xarray as xr
 
 # pylint: disable=invalid-name
 
@@ -65,6 +67,13 @@ _PEDESTAL_TOP_WIDTH_FACTOR: Final[float] = 1.5
 # Small offset added to the on-axis magnetic pressure [Pa] to guard the beta
 # calculation against division by zero.
 _MAGNETIC_PRESSURE_EPS: Final[float] = 1e-7
+# Initial pedestal-top rho_norm guess before any network prediction exists.
+_INITIAL_RHO_NORM_TOP_GUESS: Final[float] = 0.9
+_RHO_NORM_TOP_KEY: Final[torax.output.OutputKey] = torax.output.OutputKey(
+    "rho_norm_top",
+    units=torax.output.Units.DIMENSIONLESS,
+    grid_type=torax.output.GridType.SCALAR,
+)
 
 
 @jax.tree_util.register_dataclass
@@ -73,6 +82,21 @@ class EpedNnStructureState(torax.pedestal.StructureState):
   """Structure state for EPED-NN, tracking previous pedestal top location."""
 
   rho_norm_top: jt.Float[jt.Scalar, ""]
+
+  @override
+  def to_xr_datatree(
+      self,
+      context: torax.output.OutputGridContext,
+  ) -> xr.DataTree:
+    """Serializes EpedNnStructureState to an xarray DataTree."""
+    return xr.DataTree(
+        dataset=context.build_dataset({
+            _RHO_NORM_TOP_KEY: context.pack(
+                _RHO_NORM_TOP_KEY,
+                np.atleast_1d(np.asarray(self.rho_norm_top)),
+            )
+        })
+    )
 
 
 @jax.tree_util.register_dataclass
@@ -321,10 +345,32 @@ class EPEDNNmitPedestalModel(torax.pedestal.PedestalStructureModel):
         geo,
         core_profiles,
         EpedNnStructureState(
-            rho_norm_top=jnp.array(0.9, dtype=geo.rho_face_norm.dtype)
+            rho_norm_top=jnp.array(
+                _INITIAL_RHO_NORM_TOP_GUESS, dtype=geo.rho_face_norm.dtype
+            )
         ),
     )
     return structure_state
+
+  @override
+  def initial_state_from_datatree(
+      self,
+      datatree: xr.DataTree | None,
+      runtime_params: torax.RuntimeParams,
+  ) -> EpedNnStructureState:
+    """Reconstructs EpedNnStructureState from a DataTree for restarts."""
+    dtype = jnp.asarray(runtime_params.t).dtype
+    if (
+        datatree is not None
+        and _RHO_NORM_TOP_KEY in datatree.dataset.data_vars
+    ):
+      rho_norm_top = jnp.asarray(
+          np.squeeze(datatree.dataset[_RHO_NORM_TOP_KEY].values),
+          dtype=dtype,
+      )
+    else:
+      rho_norm_top = jnp.array(_INITIAL_RHO_NORM_TOP_GUESS, dtype=dtype)
+    return EpedNnStructureState(rho_norm_top=rho_norm_top)
 
   @override
   def __call__(
