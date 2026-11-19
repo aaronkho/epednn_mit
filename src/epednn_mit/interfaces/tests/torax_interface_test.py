@@ -244,6 +244,7 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
         rho_ped, rho_face_norm, np.asarray(z_eff_face)
     )
 
+    self.assertEqual(inputs.dtype, jax.numpy.float32)
     np.testing.assert_allclose(inputs[6], expected_n_e_ped_1e19, rtol=1e-5)
     np.testing.assert_allclose(inputs[8], expected_z_eff_ped, rtol=1e-5)
 
@@ -265,6 +266,33 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
     self.assertIsNot(wrapper_1, wrapper_2)
     self.assertEqual(wrapper_1, wrapper_2)
     self.assertEqual(hash(wrapper_1), hash(wrapper_2))
+
+  def test_wrapper_float32_inference(self):
+    wrapper = epednn_mit_torax_interface.EPEDNNmitPedestalModelWrapper('sparc')
+    mid_f64 = jax.numpy.array(
+        [
+            0.5 * (lo + hi)
+            for lo, hi in (
+                epednn_mit_torax_interface._SPARC_INPUT_BOUNDS.values()
+            )
+        ],
+        dtype=jax.numpy.float64,
+    )
+    mid_f32 = mid_f64.astype(jax.numpy.float32)
+    p_top_f32, width_f32 = wrapper(mid_f32)
+    p_top_f64, width_f64 = wrapper(mid_f64)
+    # Without float32 stats/params in the wrapper, the outputs are float64 and
+    # evaluating mid_f32 against float64 stats blows up to ~1e9 kPa (because
+    # fixed training inputs R, a have variance ~1e-31, amplifying float32-vs-
+    # float64 rounding error by ~1e15), failing both the dtype and allclose
+    # assertions below. Existing production runs escaped this only because
+    # _prepare_inputs clipped against float64 bounds, implicitly promoting the
+    # float32 inputs back to float64 before calling the wrapper.
+    self.assertEqual(p_top_f32.dtype, jax.numpy.float32)
+    self.assertEqual(width_f32.dtype, jax.numpy.float32)
+    np.testing.assert_allclose(p_top_f32, p_top_f64)
+    np.testing.assert_allclose(width_f32, width_f64)
+
 
 if __name__ == '__main__':
   absltest.main()

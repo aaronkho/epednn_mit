@@ -105,10 +105,10 @@ class EPEDNNmitPedestalModelWrapper:
         )
         self.model = epednn_mit_jax_model.EPEDNNmitEnsemble()
         self.input_lower_bounds = jnp.array(
-            [_SPARC_INPUT_BOUNDS[key][0] for key in _SPARC_INPUT_BOUNDS]
+            [lo for lo, _ in _SPARC_INPUT_BOUNDS.values()], dtype=jnp.float32
         )
         self.input_upper_bounds = jnp.array(
-            [_SPARC_INPUT_BOUNDS[key][1] for key in _SPARC_INPUT_BOUNDS]
+            [hi for _, hi in _SPARC_INPUT_BOUNDS.values()], dtype=jnp.float32
         )
         self.R_0 = _SPARC_DEVICE_MAJOR_RADIUS
         self.a_0 = _SPARC_DEVICE_MINOR_RADIUS
@@ -131,7 +131,7 @@ class EPEDNNmitPedestalModelWrapper:
       w_top = 1 - ψ_top = 1.5Δ in normalized poloidal flux.
     """
     p_top_kPa, pedestal_top_width_psi_norm = self.model.apply(
-        self._params, inputs, **self._stats
+        self._params, jnp.asarray(inputs, dtype=jnp.float32), **self._stats
     )
     return p_top_kPa, pedestal_top_width_psi_norm
 
@@ -375,6 +375,9 @@ class EPEDNNmitPedestalModel(torax.pedestal.PedestalStructureModel):
     # pedestal_top_width_psi_norm is the pedestal-top width 1 - ψ_top = 1.5Δ
     # (NOT the mtanh width Δ; the network was trained on pedestal-top width).
     p_top_kPa, pedestal_top_width_psi_norm = self.model(inputs)
+    dtype = geo.rho_face_norm.dtype
+    p_top_kPa = p_top_kPa.astype(dtype)
+    pedestal_top_width_psi_norm = pedestal_top_width_psi_norm.astype(dtype)
 
     # Pedestal-top poloidal flux location ψ_top = 1 - w_top, mapped to ρ_N on
     # the face grid.
