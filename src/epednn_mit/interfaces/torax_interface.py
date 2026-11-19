@@ -5,6 +5,12 @@ Please cite [M. Muraca et al. 2025 Nucl. Fusion 65
 Currently, this model is only valid for the SPARC parameter space, as specified
 in https://github.com/aaronkho/epednn_mit/tree/main/src/epednn_mit/models/sparc.
 
+Register the model once before building a TORAX config, then select it under
+``pedestal.structure_model``::
+
+    torax.pedestal.register_pedestal_structure_model(EPEDNNmitConfig)
+    config["pedestal"]["structure_model"] = {"model_name": "epednn_mit"}
+
 This file defines the classes required to use EPEDNN-mit as a TORAX pedestal
 structure model:
 1. ``EPEDNNmitPedestalModelWrapper``: closes over the EPEDNN-mit ensemble,

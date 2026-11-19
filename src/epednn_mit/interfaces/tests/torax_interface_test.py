@@ -333,5 +333,38 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
     np.testing.assert_allclose(restored.rho_norm_top, 0.87)
 
 
+  def test_run_simulation(self):
+    config = {
+        'profile_conditions': {
+            'psi_source': 'j',
+            'I_p': 15e6,
+            'I_p_source': 'profile_conditions',
+        },
+        'plasma_composition': {},
+        'numerics': {},
+        'time_step_calculator': {
+            'calculator_type': 'fixed',
+            'dt': 0.1,
+            't_final': 0.3,
+        },
+        'geometry': {'model_name': 'circular', 'n_rho': 10},
+        'sources': {},
+        'solver': {},
+        'transport': {},
+        'pedestal': {
+            'mode': 'internal_boundary_condition',
+            'formation_model': {'model_name': 'prescribed'},
+            'structure_model': {
+                'model_name': 'epednn_mit',
+                'n_e_top': 0.7e20,
+                'T_i_T_e_ratio': 1.0,
+            },
+        },
+    }
+    torax_config = torax.ToraxConfig.from_dict(config)
+    state_history = torax.run_simulation(torax_config, progress_bar=False)
+    self.assertEqual(state_history.sim_error, torax.SimError.NO_ERROR)
+
+
 if __name__ == '__main__':
   absltest.main()
