@@ -489,6 +489,7 @@ class EPEDNNmitConfig(torax.pedestal.StructureConfigBase):
   """TORAX pedestal structure model config using EPEDNN-mit.
 
   Attributes:
+    machine: Which trained EPEDNN-mit network to use.
     n_e_top: The electron density at the pedestal top [m^-3].
     T_i_T_e_ratio: Ratio of the ion and electron temperature at the pedestal
       top [dimensionless].
@@ -499,20 +500,19 @@ class EPEDNNmitConfig(torax.pedestal.StructureConfigBase):
   model_name: Annotated[Literal["epednn_mit"], torax_pydantic.JAX_STATIC] = (
       "epednn_mit"
   )
-  n_e_top: torax_pydantic.TimeVaryingScalar = torax_pydantic.ValidatedDefault(
-      0.7e20
-  )
-  T_i_T_e_ratio: torax_pydantic.TimeVaryingScalar = (
+  machine: Annotated[EPEDNNmitMachine, torax_pydantic.JAX_STATIC] = "sparc"
+  n_e_top: torax_pydantic.PositiveTimeVaryingScalar
+  T_i_T_e_ratio: torax_pydantic.PositiveTimeVaryingScalar = (
       torax_pydantic.ValidatedDefault(1.0)
   )
-  p_top_multiplier: torax_pydantic.TimeVaryingScalar = (
+  p_top_multiplier: torax_pydantic.PositiveTimeVaryingScalar = (
       torax_pydantic.ValidatedDefault(1.0)
   )
 
   def build_structure_model(
       self,
   ) -> EPEDNNmitPedestalModel:
-    return EPEDNNmitPedestalModel()
+    return EPEDNNmitPedestalModel(machine=self.machine)
 
   def build_runtime_params(self, t: chex.Numeric) -> RuntimeParams:
     base_runtime_params = super().build_runtime_params(t)
