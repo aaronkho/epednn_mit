@@ -29,11 +29,14 @@ def load_params_from_pickle(
     with open(pickle_file, "rb") as f:
         data = pickle.load(f)
 
+    # Keep weights and normalization stats in float32 (training precision) even
+    # when JAX enables x64. Fixed training inputs (R, a) have variance ~1e-31,
+    # so evaluating float32 inputs against float64 stats blows up.
     stats = {
-        "input_mean": jnp.asarray(data["input.mean"]),
-        "input_variance": jnp.asarray(data["input.variance"]),
-        "output_mean": jnp.asarray(data["output.mean"]),
-        "output_variance": jnp.asarray(data["output.variance"]),
+        "input_mean": jnp.asarray(data["input.mean"], dtype=jnp.float32),
+        "input_variance": jnp.asarray(data["input.variance"], dtype=jnp.float32),
+        "output_mean": jnp.asarray(data["output.mean"], dtype=jnp.float32),
+        "output_variance": jnp.asarray(data["output.variance"], dtype=jnp.float32),
     }
 
     # Remap the weight names
@@ -45,8 +48,8 @@ def load_params_from_pickle(
     }
     for pkl_label, flax_label in pkl_to_flax_labels.items():
         flax_params[flax_label] = {
-            "kernel": data[f"{pkl_label}.weight"],
-            "bias": data[f"{pkl_label}.bias"],
+            "kernel": jnp.asarray(data[f"{pkl_label}.weight"], dtype=jnp.float32),
+            "bias": jnp.asarray(data[f"{pkl_label}.bias"], dtype=jnp.float32),
         }
 
     return stats, {"params": flax_params}
