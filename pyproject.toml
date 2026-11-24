@@ -31,6 +31,7 @@ tensorflow = ["tensorflow>=2.18.1"]
 pytorch = ["torch>=2.4.0"]
 jax = ["flax"]
 torax = ["torax>=2.0.0", "epednn_mit[jax]"]
+dev = ["pytest"]
 
 [project.urls]
 "Homepage" = "https://github.com/aaronkho/epednn_mit"
