@@ -9,7 +9,10 @@ Register the model once before building a TORAX config, then select it under
 ``pedestal.structure_model``::
 
     torax.pedestal.register_pedestal_structure_model(EPEDNNmitConfig)
-    config["pedestal"]["structure_model"] = {"model_name": "epednn_mit"}
+    config["pedestal"]["structure_model"] = {
+        "model_name": "epednn_mit",
+        "n_e_top": 2.0e20,
+    }
 
 This file defines the classes required to use EPEDNN-mit as a TORAX pedestal
 structure model:
