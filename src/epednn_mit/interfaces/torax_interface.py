@@ -458,11 +458,17 @@ class EPEDNNmitPedestalModel(torax.pedestal.PedestalStructureModel):
     Z_impurity_bundled_top = at_top(
         core_profiles.ions.Z_impurity_bundled_face
     )
+    # Guard dead branches of jnp.where against 0/0 so autodiff produces finite
+    # gradients in pure plasmas (Z_eff == 1.0).
+    safe_dilution_denom = jnp.where(
+        Z_eff_top == 1.0,
+        1.0,
+        Z_i_top * (Z_impurity_bundled_top - Z_i_top),
+    )
     dilution_factor_top = jnp.where(
         Z_eff_top == 1.0,
         1.0,
-        (Z_impurity_bundled_top - Z_eff_top)
-        / (Z_i_top * (Z_impurity_bundled_top - Z_i_top)),
+        (Z_impurity_bundled_top - Z_eff_top) / safe_dilution_denom,
     )
     n_i_top = dilution_factor_top * n_e_top
     safe_Z_impurity_top = jnp.where(

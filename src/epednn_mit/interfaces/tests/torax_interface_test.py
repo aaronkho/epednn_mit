@@ -333,6 +333,44 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
     np.testing.assert_allclose(restored.rho_norm_top, 0.87)
 
 
+  def test_pure_plasma_dilution_gradient_is_finite(self):
+    """Tests that Z_eff=1 with Z_impurity_bundled=Z_i yields finite grads."""
+    structure_model = self.pedestal_model.structure_model
+    init_state = structure_model.initial_state(
+        self.runtime_params, self.geo, self.core_profiles
+    )
+    ones_face = jax.numpy.ones_like(self.core_profiles.ions.Z_eff_face)
+    pure_profiles = dataclasses.replace(
+        self.core_profiles,
+        ions=dataclasses.replace(
+            self.core_profiles.ions,
+            Z_eff_face=ones_face,
+            Z_i_face=ones_face,
+            Z_impurity_average_face=ones_face,
+            Z_impurity_bundled_face=ones_face,
+        ),
+    )
+
+    def eval_T_e_top(n_e_top):
+      rp = dataclasses.replace(
+          self.runtime_params,
+          pedestal=dataclasses.replace(
+              self.runtime_params.pedestal,
+              structure=dataclasses.replace(
+                  self.runtime_params.pedestal.structure,
+                  n_e_top=n_e_top,
+              ),
+          ),
+      )
+      out, _ = structure_model(rp, self.geo, pure_profiles, init_state)
+      return out.T_e_top
+
+    val, grad = jax.value_and_grad(eval_T_e_top)(
+        jax.numpy.asarray(2.0e20, dtype=self.geo.rho_face_norm.dtype)
+    )
+    self.assertTrue(np.isfinite(val))
+    self.assertTrue(np.isfinite(grad))
+
   def test_run_simulation(self):
     config = {
         'profile_conditions': {
