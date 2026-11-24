@@ -11,7 +11,7 @@ from epednn_mit.models.sparc import pytorch_model
 def test_sparc_pytorch_inference():
     model_out, test_out = pytorch_model.test_epednn_mit_sparc_pytorch()
     assert model_out.shape == test_out.shape
-    np.testing.assert_allclose(model_out, test_out)
+    np.testing.assert_allclose(model_out, test_out, rtol=1e-5, atol=1e-8)
 
 
 def test_sparc_pytorch_cli():

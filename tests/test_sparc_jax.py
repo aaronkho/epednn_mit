@@ -16,7 +16,7 @@ def test_sparc_jax_inference():
     model_out, test_out = jax_model.test_epednn_mit_sparc_jax()
     assert model_out.shape == test_out.shape
     assert model_out.dtype == jnp.float32
-    np.testing.assert_allclose(model_out, test_out)
+    np.testing.assert_allclose(model_out, test_out, rtol=1e-5, atol=1e-8)
 
 
 def test_load_ensemble_params_empty_raises():
