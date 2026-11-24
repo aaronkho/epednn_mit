@@ -6,6 +6,7 @@ from absl.testing import parameterized
 from epednn_mit.interfaces import torax_interface as epednn_mit_torax_interface
 import jax
 import numpy as np
+import pydantic
 import torax
 
 # pylint: disable=invalid-name
@@ -332,6 +333,23 @@ class EPEDNNmitPedestalModelTest(parameterized.TestCase):
     )
     np.testing.assert_allclose(restored.rho_norm_top, 0.87)
 
+
+  def test_config_validation(self):
+    # n_e_top is required.
+    with self.assertRaises(pydantic.ValidationError):
+      epednn_mit_torax_interface.EPEDNNmitConfig.from_dict(
+          {'model_name': 'epednn_mit'}
+      )
+    # Invalid machine name is rejected.
+    with self.assertRaises(pydantic.ValidationError):
+      epednn_mit_torax_interface.EPEDNNmitConfig.from_dict(
+          {'model_name': 'epednn_mit', 'machine': 'iter', 'n_e_top': 2.0e20}
+      )
+    # Non-positive scalar fields are rejected.
+    for field in ('n_e_top', 'T_i_T_e_ratio', 'p_top_multiplier'):
+      kwargs = {'model_name': 'epednn_mit', 'n_e_top': 2.0e20, field: 0.0}
+      with self.assertRaises(pydantic.ValidationError):
+        epednn_mit_torax_interface.EPEDNNmitConfig.from_dict(kwargs)
 
   def test_pure_plasma_dilution_gradient_is_finite(self):
     """Tests that Z_eff=1 with Z_impurity_bundled=Z_i yields finite grads."""
