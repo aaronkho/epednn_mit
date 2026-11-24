@@ -178,7 +178,7 @@ class EPEDNNmitPedestalModelWrapper:
     )
 
 
-@functools.lru_cache(maxsize=1)
+@functools.lru_cache(maxsize=None)
 def _get_epednn_mit_wrapper(
     machine: EPEDNNmitMachine,
 ) -> EPEDNNmitPedestalModelWrapper:
