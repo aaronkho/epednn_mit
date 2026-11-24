@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "epednn_mit"
-version = "1.0.2"
+version = "1.1.0"
 description = "EPED network networks trained by MIT"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -31,6 +31,7 @@ tensorflow = ["tensorflow>=2.18.1"]
 pytorch = ["torch>=2.4.0"]
 jax = ["flax"]
 torax = ["torax>=2.0.0", "epednn_mit[jax]"]
+dev = ["pytest"]
 
 [project.urls]
 "Homepage" = "https://github.com/aaronkho/epednn_mit"

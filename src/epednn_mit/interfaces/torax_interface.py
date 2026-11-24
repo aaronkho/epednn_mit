@@ -9,7 +9,10 @@ Register the model once before building a TORAX config, then select it under
 ``pedestal.structure_model``::
 
     torax.pedestal.register_pedestal_structure_model(EPEDNNmitConfig)
-    config["pedestal"]["structure_model"] = {"model_name": "epednn_mit"}
+    config["pedestal"]["structure_model"] = {
+        "model_name": "epednn_mit",
+        "n_e_top": 2.0e20,
+    }
 
 This file defines the classes required to use EPEDNN-mit as a TORAX pedestal
 structure model:
@@ -175,7 +178,7 @@ class EPEDNNmitPedestalModelWrapper:
     )
 
 
-@functools.lru_cache(maxsize=1)
+@functools.lru_cache(maxsize=None)
 def _get_epednn_mit_wrapper(
     machine: EPEDNNmitMachine,
 ) -> EPEDNNmitPedestalModelWrapper:
@@ -455,11 +458,17 @@ class EPEDNNmitPedestalModel(torax.pedestal.PedestalStructureModel):
     Z_impurity_bundled_top = at_top(
         core_profiles.ions.Z_impurity_bundled_face
     )
+    # Guard dead branches of jnp.where against 0/0 so autodiff produces finite
+    # gradients in pure plasmas (Z_eff == 1.0).
+    safe_dilution_denom = jnp.where(
+        Z_eff_top == 1.0,
+        1.0,
+        Z_i_top * (Z_impurity_bundled_top - Z_i_top),
+    )
     dilution_factor_top = jnp.where(
         Z_eff_top == 1.0,
         1.0,
-        (Z_impurity_bundled_top - Z_eff_top)
-        / (Z_i_top * (Z_impurity_bundled_top - Z_i_top)),
+        (Z_impurity_bundled_top - Z_eff_top) / safe_dilution_denom,
     )
     n_i_top = dilution_factor_top * n_e_top
     safe_Z_impurity_top = jnp.where(
