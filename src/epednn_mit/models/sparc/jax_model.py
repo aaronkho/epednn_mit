@@ -144,6 +144,10 @@ class EPEDNNmit(nn.Module):
         Returns:
           The model's prediction.
         """
+        # Cast inputs to float32 to match the float32 normalization stats and
+        # weights even when JAX enables x64 (avoids float64-vs-float32
+        # cancellation blowup on fixed training inputs with variance ~1e-31).
+        x = jnp.asarray(x, dtype=jnp.float32)
         x = normalize(x, mean=input_mean, stddev=jnp.sqrt(input_variance))
 
         for hidden_dim in self.hidden_dims:
